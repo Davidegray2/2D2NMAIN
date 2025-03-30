@@ -3,9 +3,10 @@
 import type React from "react"
 import { useState, useEffect } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import { ArrowLeft, Shield, Trophy, Zap, Crown, Loader2, CheckCircle, Mail } from "lucide-react"
+import { ArrowLeft, Shield, Trophy, Zap, Crown, Loader2, CheckCircle, Mail, CreditCard } from 'lucide-react'
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
+import { loadStripe } from "@stripe/stripe-js"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,6 +14,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+
+// Initialize Stripe
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLIC_KEY!)
 
 export default function SignupPage() {
   const searchParams = useSearchParams()
@@ -29,6 +33,7 @@ export default function SignupPage() {
   const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({})
   const [registrationComplete, setRegistrationComplete] = useState(false)
   const [emailConfirmationRequired, setEmailConfirmationRequired] = useState(false)
+  const [processingPayment, setProcessingPayment] = useState(false)
 
   useEffect(() => {
     const params = new URLSearchParams(searchParams)
@@ -62,14 +67,33 @@ export default function SignupPage() {
     checkSession()
   }, [router])
 
-  const tiers: { [key: string]: { name: string; price: string; color: string; icon: React.ReactNode } } = {
+  const tiers: { [key: string]: { name: string; price: string; color: string; icon: React.ReactNode; priceId?: string } } = {
     rookie: { name: "Rookie", price: "Free", color: "bg-slate-600", icon: <Shield className="h-6 w-6" /> },
-    contender: { name: "Contender", price: "$9.99/month", color: "bg-blue-600", icon: <Zap className="h-6 w-6" /> },
-    warrior: { name: "Warrior", price: "$19.99/month", color: "bg-purple-600", icon: <Trophy className="h-6 w-6" /> },
-    legend: { name: "Legend", price: "$39.99/month", color: "bg-amber-600", icon: <Crown className="h-6 w-6" /> },
+    contender: { 
+      name: "Contender", 
+      price: "$9.99/month", 
+      color: "bg-blue-600", 
+      icon: <Zap className="h-6 w-6" />,
+      priceId: "price_1234567890" // Replace with your actual Stripe price ID
+    },
+    warrior: { 
+      name: "Warrior", 
+      price: "$19.99/month", 
+      color: "bg-purple-600", 
+      icon: <Trophy className="h-6 w-6" />,
+      priceId: "price_2345678901" // Replace with your actual Stripe price ID
+    },
+    legend: { 
+      name: "Legend", 
+      price: "$39.99/month", 
+      color: "bg-amber-600", 
+      icon: <Crown className="h-6 w-6" />,
+      priceId: "price_3456789012" // Replace with your actual Stripe price ID
+    },
   }
 
   const currentTier = tiers[selectedTier] || tiers.rookie
+  const isPaidTier = selectedTier !== "rookie"
 
   const validateForm = () => {
     const errors: { [key: string]: string } = {}
@@ -114,6 +138,22 @@ export default function SignupPage() {
     setSuccessMsg("")
 
     try {
+      // For free tier, proceed with normal signup
+      if (!isPaidTier) {
+        await processSignup()
+      } else {
+        // For paid tiers, create account first then redirect to payment
+        await processSignupWithPayment()
+      }
+    } catch (err: any) {
+      console.error("Signup error:", err)
+      setErrorMsg(err.message || "An unexpected error occurred. Please try again.")
+      setLoading(false)
+    }
+  }
+
+  async function processSignup() {
+    try {
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -154,6 +194,7 @@ export default function SignupPage() {
       // If we get here, email confirmation is not required (rare case or development setting)
       setSuccessMsg("Account created successfully!")
       setRegistrationComplete(true)
+      setLoading(false)
 
       // Try auto-login (will likely fail in production due to email confirmation)
       setTimeout(async () => {
@@ -176,10 +217,81 @@ export default function SignupPage() {
           // This is expected if email confirmation is required
         }
       }, 3000)
-    } catch (err: any) {
-      console.error("Signup error:", err)
-      setErrorMsg(err.message || "An unexpected error occurred. Please try again.")
+    } catch (err) {
+      throw err
+    }
+  }
+
+  async function processSignupWithPayment() {
+    try {
+      setProcessingPayment(true)
+      
+      // 1. Create the user account first
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            fullName,
+            tier: selectedTier, // This will be updated after payment
+            first_name: fullName.split(" ")[0],
+            last_name: fullName.split(" ").slice(1).join(" "),
+            terms_accepted: termsAccepted,
+            terms_accepted_at: new Date().toISOString(),
+            payment_pending: true,
+          },
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
+      })
+
+      if (error) {
+        throw error
+      }
+
+      if (!data.user) {
+        throw new Error("Failed to create account")
+      }
+
+      const userId = data.user.id
+
+      // 2. Create a checkout session
+      const response = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          priceId: currentTier.priceId,
+          userId: userId,
+          customerEmail: email,
+          tierName: currentTier.name,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to create checkout session')
+      }
+
+      const { sessionId } = await response.json()
+
+      // 3. Redirect to Stripe Checkout
+      const stripe = await stripePromise
+      if (!stripe) {
+        throw new Error('Stripe failed to initialize')
+      }
+      
+      const { error: stripeError } = await stripe.redirectToCheckout({
+        sessionId,
+      })
+
+      if (stripeError) {
+        throw stripeError
+      }
+    } catch (err) {
+      throw err
     } finally {
+      setProcessingPayment(false)
       setLoading(false)
     }
   }
@@ -268,6 +380,17 @@ export default function SignupPage() {
                 )}
               </div>
             </CardHeader>
+            {isPaidTier && (
+              <CardContent>
+                <div className="text-sm text-muted-foreground">
+                  <div className="flex items-center mb-2">
+                    <CreditCard className="h-4 w-4 mr-2" />
+                    <span>Secure payment via Stripe</span>
+                  </div>
+                  <p>You'll be redirected to our secure payment processor after creating your account.</p>
+                </div>
+              </CardContent>
+            )}
           </Card>
         </div>
 
@@ -356,34 +479,46 @@ export default function SignupPage() {
                   )}
                 </div>
 
-                <div className="flex items-center space-x-2">
+                {/* Fixed Terms and Conditions Checkbox */}
+                <div className="flex items-start space-x-2">
                   <Checkbox
                     id="terms"
                     checked={termsAccepted}
-                    onCheckedChange={(checked) => setTermsAccepted(checked as boolean)}
+                    onCheckedChange={(checked) => {
+                      setTermsAccepted(checked === true);
+                      if (checked) {
+                        setFormErrors({...formErrors, terms: ""});
+                      }
+                    }}
                     disabled={loading}
+                    className="mt-1"
                   />
-                  <Label htmlFor="terms" className="text-sm">
-                    I agree to the{" "}
-                    <Link href="/legal" className="text-primary hover:underline">
-                      Terms of Service
-                    </Link>{" "}
-                    and{" "}
-                    <Link href="/legal" className="text-primary hover:underline">
-                      Privacy Policy
-                    </Link>
-                  </Label>
+                  <div>
+                    <Label 
+                      htmlFor="terms" 
+                      className={`text-sm cursor-pointer ${formErrors.terms ? "text-red-500" : ""}`}
+                    >
+                      I agree to the{" "}
+                      <Link href="/legal" className="text-primary hover:underline">
+                        Terms of Service
+                      </Link>{" "}
+                      and{" "}
+                      <Link href="/legal" className="text-primary hover:underline">
+                        Privacy Policy
+                      </Link>
+                    </Label>
+                    {formErrors.terms && <p className="text-red-500 text-sm">{formErrors.terms}</p>}
+                  </div>
                 </div>
-                {formErrors.terms && <p className="text-red-500 text-sm">{formErrors.terms}</p>}
 
                 <Button type="submit" className="w-full min-w-[140px]" disabled={loading}>
                   {loading ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Creating Account...
+                      {processingPayment ? "Processing Payment..." : "Creating Account..."}
                     </>
                   ) : (
-                    "Create Account"
+                    isPaidTier ? "Create Account & Continue to Payment" : "Create Account"
                   )}
                 </Button>
 
@@ -401,4 +536,3 @@ export default function SignupPage() {
     </div>
   )
 }
-
