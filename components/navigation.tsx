@@ -3,18 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { Button } from "@/components/ui/button"
-import {
-  Home,
-  Megaphone,
-  Trophy,
-  User,
-  BarChart,
-  Utensils,
-  Dumbbell,
-  Video,
-  MessageSquare,
-  Settings,
-} from "lucide-react"
+import { Home, Megaphone, Trophy, User, BarChart, Utensils, Dumbbell, Video, MessageSquare, Settings, CreditCard } from 'lucide-react'
 import { useState, useMemo, useEffect, useCallback } from "react"
 
 export function Navigation() {
@@ -26,6 +15,7 @@ export function Navigation() {
     () => [
       { href: "/", icon: Home, label: "Home" },
       { href: "/dashboard", icon: BarChart, label: "Dashboard" },
+      { href: "/membership-selection", icon: CreditCard, label: "Membership Plans" }, // Added new navigation item
       { href: "/community", icon: Megaphone, label: "Community Feed" },
       { href: "/leaderboard", icon: Trophy, label: "Leaderboard" },
       { href: "/profile", icon: User, label: "My Profile" },
@@ -139,4 +129,3 @@ export function Navigation() {
     </header>
   )
 }
-
