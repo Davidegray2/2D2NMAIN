@@ -2,6 +2,14 @@ import { NextResponse } from 'next/server';
 import { headers } from 'next/headers';
 import Stripe from 'stripe';
 import { createClient } from '@/lib/supabase-server';
+import * as Sentry from '@sentry/node';
+import tierMap from '@/utils/tierMap';
+
+Sentry.init({ dsn: process.env.SENTRY_DSN });
+
+if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) {
+  throw new Error('Stripe environment variables are not defined');
+}
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: '2023-10-16',
@@ -9,6 +17,33 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
 
 // This is your Stripe webhook secret for testing your endpoint locally
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+const handleCheckoutSessionCompleted = async (session: Stripe.Checkout.Session) => {
+  const userId = session.client_reference_id;
+  if (!userId) return;
+
+  const subscriptionId = session.subscription as string;
+  const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+  const priceId = subscription.items.data[0].price.id;
+
+  const tier = tierMap[priceId] || 'rookie';
+
+  const supabase = createClient();
+  await supabase
+    .from('user_subscriptions')
+    .update({ is_active: false, end_date: new Date().toISOString() })
+    .eq('user_id', userId)
+    .eq('is_active', true);
+
+  await supabase.from('user_subscriptions').insert({
+    user_id: userId,
+    tier,
+    start_date: new Date().toISOString(),
+    end_date: null,
+    is_active: true,
+    stripe_subscription_id: subscriptionId,
+  });
+};
 
 export async function POST(request: Request) {
   const body = await request.text();
@@ -27,64 +62,14 @@ export async function POST(request: Request) {
   // Handle the event
   try {
     switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session;
-        
-        // Get the user ID from the session
-        const userId = session.client_reference_id;
-        
-        if (userId) {
-          // Get subscription details
-          const subscriptionId = session.subscription as string;
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-          const priceId = subscription.items.data[0].price.id;
-          
-          // Map price ID to subscription tier
-          // Replace these with your actual price IDs from Stripe
-          const tierMap: Record<string, string> = {
-            'price_1234567890': 'rookie',
-            'price_2345678901': 'contender',
-            'price_3456789012': 'warrior',
-            'price_4567890123': 'legend',
-          };
-          
-          const tier = tierMap[priceId] || 'rookie';
-          
-          // Update user subscription in your database
-          const supabase = createClient();
-          
-          // First, deactivate any existing subscriptions
-          await supabase
-            .from('user_subscriptions')
-            .update({ is_active: false, end_date: new Date().toISOString() })
-            .eq('user_id', userId)
-            .eq('is_active', true);
-          
-          // Create a new subscription
-          await supabase.from('user_subscriptions').insert({
-            user_id: userId,
-            tier,
-            start_date: new Date().toISOString(),
-            end_date: null,
-            is_active: true,
-            stripe_subscription_id: subscriptionId,
-          });
-        }
+      case 'checkout.session.completed':
+        await handleCheckoutSessionCompleted(event.data.object as Stripe.Checkout.Session);
         break;
-      }
-      
       case 'customer.subscription.updated': {
         const subscription = event.data.object as Stripe.Subscription;
         const priceId = subscription.items.data[0].price.id;
         
         // Map price ID to subscription tier
-        const tierMap: Record<string, string> = {
-          'price_1234567890': 'rookie',
-          'price_2345678901': 'contender',
-          'price_3456789012': 'warrior',
-          'price_4567890123': 'legend',
-        };
-        
         const tier = tierMap[priceId] || 'rookie';
         
         // Find the user with this subscription ID
@@ -134,10 +119,12 @@ export async function POST(request: Request) {
       
       default:
         console.log(`Unhandled event type: ${event.type}`);
+        return NextResponse.json({ received: true });
     }
     
     return NextResponse.json({ received: true });
   } catch (error) {
+    Sentry.captureException(error);
     console.error('Error processing webhook:', error);
     return NextResponse.json(
       { error: 'Failed to process webhook' },
