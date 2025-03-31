@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/auth-context';
 import { toast } from '@/components/ui/toast';
+import '@/styles/membership-selection.css'; // Import the CSS file
 
 if (!process.env.NEXT_PUBLIC_STRIPE_PUBLIC_KEY) {
   throw new Error('Stripe public key is not defined in environment variables');
@@ -14,39 +15,6 @@ if (!process.env.NEXT_PUBLIC_STRIPE_PUBLIC_KEY) {
 
 // Initialize Stripe
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLIC_KEY!);
-
-// Define subscription tiers with their Stripe price IDs
-// Replace these price IDs with your actual ones from Stripe
-const subscriptionTiers = [
-  {
-    name: 'Rookie',
-    description: 'Basic features for beginners',
-    price: '$9.99/month',
-    features: ['Basic workout tracking', 'Limited community access', 'Standard support'],
-    priceId: 'price_1234567890', // Replace with your actual Stripe price ID
-  },
-  {
-    name: 'Contender',
-    description: 'Advanced features for regular users',
-    price: '$19.99/month',
-    features: ['Advanced workout tracking', 'Full community access', 'Priority support'],
-    priceId: 'price_2345678901', // Replace with your actual Stripe price ID
-  },
-  {
-    name: 'Warrior',
-    description: 'Premium features for serious athletes',
-    price: '$29.99/month',
-    features: ['Premium workout tracking', 'VIP community access', 'Premium support', 'Custom workout plans'],
-    priceId: 'price_3456789012', // Replace with your actual Stripe price ID
-  },
-  {
-    name: 'Legend',
-    description: 'All features for professional athletes',
-    price: '$49.99/month',
-    features: ['All premium features', 'Personal coaching', '24/7 support', 'Custom nutrition plans'],
-    priceId: 'price_4567890123', // Replace with your actual Stripe price ID
-  },
-];
 
 const createCheckoutSession = async (priceId: string) => {
   const response = await fetch('/api/create-checkout-session', {
@@ -161,10 +129,3 @@ export default function MembershipSelectionPage() {
     </div>
   );
 }
-
-.card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-
